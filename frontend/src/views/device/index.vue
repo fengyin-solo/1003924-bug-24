@@ -47,13 +47,28 @@
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
-              v-for="action in actions"
-              :key="action"
+              v-if="row.status !== '待维修' && row.status !== '已停用'"
               class="link"
               type="button"
-              @click="runAction(action, row)"
+              @click="runAction('报修设备', row)"
             >
-              {{ action }}
+              报修设备
+            </button>
+            <button
+              v-if="row.status === '待维修'"
+              class="link"
+              type="button"
+              @click="runAction('确认修复', row)"
+            >
+              确认修复
+            </button>
+            <button
+              v-if="row.status !== '已停用'"
+              class="link"
+              type="button"
+              @click="runAction('停用设备', row)"
+            >
+              停用设备
             </button>
           </td>
         </tr>
@@ -62,6 +77,63 @@
         </tr>
       </tbody>
     </table>
+
+    <article class="card-block repair-block">
+      <h3 class="block-title">待维修核查项（与报修动作同一事务生成）</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>核查项</th>
+            <th>设备编号</th>
+            <th>报修原因</th>
+            <th>生成时间</th>
+            <th>核查状态</th>
+            <th>关闭时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in repairChecks" :key="item.id">
+            <td>#{{ item.id }}</td>
+            <td>{{ item.deviceCode }}</td>
+            <td>{{ item.reason }}</td>
+            <td>{{ item.createdAt }}</td>
+            <td>{{ item.status }}</td>
+            <td>{{ item.closedAt ?? '—' }}</td>
+          </tr>
+          <tr v-if="!repairChecks.length">
+            <td colspan="6" class="empty-state">暂无核查项，对设备执行「报修设备」后会在此同步生成</td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article class="card-block repair-block">
+      <h3 class="block-title">倾斜校核动态（与倾斜列表/详情同一读取口径）</h3>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>记录编号</th>
+            <th>测点编号</th>
+            <th>观测方向</th>
+            <th>校核人</th>
+            <th>复测结论</th>
+            <th>记录状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in tiltViews" :key="item.id">
+            <td>
+              <RouterLink class="link" :to="`/tilt/${item.id}`">{{ item.recordCode || '—' }}</RouterLink>
+            </td>
+            <td>{{ item.pointCode || '—' }}</td>
+            <td>{{ item.direction }}</td>
+            <td>{{ item.reviewer }}</td>
+            <td>{{ item.conclusion }}</td>
+            <td>{{ item.status }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </article>
 
     <footer class="page-foot">
       <span>共 {{ total }} 条监测设备记录</span>
@@ -73,25 +145,33 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 
+import { downloadEntries, moduleMeta } from '@/api/local-service'
 import {
-  downloadEntries,
-  listEntries,
-  moduleMeta,
-  runAction as applyAction,
-} from '@/api/local-service'
-import type { EntryRow } from '@/data/types'
+  confirmDeviceFixed,
+  deviceRows,
+  listDeviceRepairChecks,
+  reportDeviceRepair,
+  stopDevice,
+} from '@/data/device-service'
+import { listTiltViews, type TiltViewRow } from '@/data/tilt-view'
+import type { DeviceRepairCheck, EntryRow } from '@/data/types'
 
 const meta = moduleMeta('device')
-const columns = ["设备编号", "设备类型", "所属隐患点", "安装日期", "最近维护日", "电池余量", "通讯状态", "设备状态"]
-const actions = ["报修设备", "确认修复", "停用设备"]
-const statuses = ["正常运行", "信号异常", "低电量", "待维修", "已停用"]
-const stats = [{"label": "设备总数", "value": 0}, {"label": "正常运行数", "value": 0}, {"label": "待维修数", "value": 0}]
+const columns = ['设备编号', '设备类型', '所属隐患点', '安装日期', '最近维护日', '电池余量', '通讯状态']
+const statuses = ['正常运行', '信号异常', '低电量', '待维修', '已停用']
+const stats = computed(() => [
+  { label: '设备总数', value: rows.value.length },
+  { label: '正常运行数', value: rows.value.filter((r) => r.status === '正常运行').length },
+  { label: '待维修数', value: rows.value.filter((r) => r.status === '待维修').length },
+])
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filterFields = ['设备编号', '设备类型', '所属隐患点']
+const repairChecks = ref<DeviceRepairCheck[]>([])
+const tiltViews = ref<TiltViewRow[]>([])
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -114,7 +194,18 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
+  let result
+  if (action === '报修设备') {
+    const reason = window.prompt('请填写报修原因（可留空，使用默认核查描述）')
+    if (reason === null) return
+    result = reportDeviceRepair(Number(row.id), reason)
+  } else if (action === '确认修复') {
+    result = confirmDeviceFixed(Number(row.id))
+  } else if (action === '停用设备') {
+    result = stopDevice(Number(row.id))
+  } else {
+    result = { ok: false, message: '未知动作' }
+  }
   if (!result.ok) {
     errorMessage.value = result.message
     return
@@ -125,9 +216,17 @@ function runAction(action: string, row: EntryRow) {
 function reload() {
   errorMessage.value = ''
   try {
-    const payload = listEntries(meta.key, filters.value)
-    rows.value = payload.items
-    total.value = payload.total
+    // 设备、核查项、倾斜动态都从同一份持久化状态读取，刷新/返回/重进结果一致。
+    const all = deviceRows()
+    const pairs = Object.entries(filters.value).filter(([, value]) => value.trim() !== '')
+    rows.value = pairs.length
+      ? all.filter((row) =>
+          pairs.every(([field, value]) => String(row[field] ?? '').includes(value.trim())),
+        )
+      : all
+    total.value = rows.value.length
+    repairChecks.value = listDeviceRepairChecks()
+    tiltViews.value = listTiltViews()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '监测设备列表读取失败'
   }

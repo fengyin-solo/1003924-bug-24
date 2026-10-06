@@ -63,6 +63,40 @@
       </tbody>
     </table>
 
+    <section class="repair-panel">
+      <header class="repair-head">
+        <h3>待维修核查项</h3>
+        <span class="repair-count">未办结 {{ openCount }} 项</span>
+      </header>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>核查编号</th>
+            <th>设备编号</th>
+            <th>所属隐患点</th>
+            <th>报修时间</th>
+            <th>核查状态</th>
+            <th>核查结论</th>
+            <th>办结时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="todo in todos" :key="String(todo.id)">
+            <td>{{ todo['核查编号'] }}</td>
+            <td>{{ todo['设备编号'] }}</td>
+            <td>{{ todo['所属隐患点'] }}</td>
+            <td>{{ todo['报修时间'] }}</td>
+            <td>{{ todo.status }}</td>
+            <td>{{ todo['核查结论'] || '—' }}</td>
+            <td>{{ todo['办结时间'] || '—' }}</td>
+          </tr>
+          <tr v-if="!todos.length">
+            <td colspan="7" class="empty-state">暂无待维修核查项，报修设备后自动生成</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条监测设备记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
@@ -76,8 +110,10 @@ import { computed, onMounted, ref } from 'vue'
 import {
   downloadEntries,
   listEntries,
+  listRepairTodos,
   moduleMeta,
   runAction as applyAction,
+  syncRepairTodos,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
 
@@ -88,6 +124,7 @@ const statuses = ["正常运行", "信号异常", "低电量", "待维修", "已
 const stats = [{"label": "设备总数", "value": 0}, {"label": "正常运行数", "value": 0}, {"label": "待维修数", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
+const todos = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
@@ -97,6 +134,10 @@ const statusSummary = computed(() =>
     status,
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
+)
+// 台账与待办读同一份存储：未办结的排前面，刷新、返回、重进看到的都是同一结果。
+const openCount = computed(
+  () => todos.value.filter((todo) => String(todo.status) === '待核查').length,
 )
 
 function resetFilters() {
@@ -120,6 +161,7 @@ function runAction(action: string, row: EntryRow) {
     return
   }
   reload()
+  reloadTodos()
 }
 
 function reload() {
@@ -133,5 +175,15 @@ function reload() {
   }
 }
 
-onMounted(reload)
+function reloadTodos() {
+  const all = listRepairTodos()
+  todos.value = [...all].sort((a, b) => Number(b.pending) - Number(a.pending) || Number(a.id) - Number(b.id))
+}
+
+onMounted(() => {
+  // 先补建台账里漏掉的待维修核查项，再读列表，保证台账与待办一致。
+  syncRepairTodos()
+  reload()
+  reloadTodos()
+})
 </script>
